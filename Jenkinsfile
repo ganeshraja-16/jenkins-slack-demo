@@ -11,7 +11,7 @@ pipeline {
             steps {
                 echo 'Validating site files...'
                 sh '''
-                    test -f site/break.html
+                    test -f site/index.html
                     test -f site/style.css
                     echo "Build validation passed"
                 '''
@@ -38,7 +38,7 @@ pipeline {
             steps {
                 echo 'Deploying site to web server...'
                 sh '''
-                    sed "s/BUILD_NUMBER_PLACEHOLDER/${BUILD_NUMBER}/" site/index.html > /var/www/html/index.html
+                    sed "s/BUILD_NUMBER_PLACEHOLDER/${BUILD_NUMBER}/" site/index.html > /var/www/break/index.html
                     cp site/style.css /var/www/html/style.css
                 '''
             }
