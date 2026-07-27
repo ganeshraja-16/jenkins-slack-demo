@@ -11,7 +11,7 @@ pipeline {
             steps {
                 echo 'Validating site files...'
                 sh '''
-                    test -f site/index.html
+                    test -f site/break.html
                     test -f site/style.css
                     echo "Build validation passed"
                 '''
