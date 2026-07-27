@@ -38,7 +38,7 @@ pipeline {
             steps {
                 echo 'Deploying site to web server...'
                 sh '''
-                    sed "s/BUILD_NUMBER_PLACEHOLDER/${BUILD_NUMBER}/" site/index.html > /var/www/break/index.html
+                    sed "s/BUILD_NUMBER_PLACEHOLDER/${BUILD_NUMBER}/" site/index.html > /var/www/html/index.html
                     cp site/style.css /var/www/html/style.css
                 '''
             }
