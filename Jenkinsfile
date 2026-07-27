@@ -9,7 +9,7 @@ pipeline {
         stage('Build') {
             steps {
                 echo 'Running build steps...'
-                sh 'exit 1'   // change to exit 1 later to test failure
+                sh 'exit 0'   
             }
         }
     }
