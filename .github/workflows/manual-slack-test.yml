@@ -75,9 +75,17 @@ jobs:
       - name: Register new task definition revision
         id: register-task-def
         run: |
+          jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' \
+            "${{ steps.render-task-def.outputs.task-definition }}" > cleaned-task-def.json
+
+          echo "----- Cleaned task definition (for debugging) -----"
+          cat cleaned-task-def.json
+          echo "-----------------------------------------------------"
+
           REVISION=$(aws ecs register-task-definition \
-            --cli-input-json file://<(jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' ${{ steps.render-task-def.outputs.task-definition }}) \
+            --cli-input-json file://cleaned-task-def.json \
             --query 'taskDefinition.revision' --output text)
+
           echo "revision=$REVISION" >> $GITHUB_OUTPUT
 
       - name: Deploy to ECS service
@@ -111,7 +119,14 @@ jobs:
 
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           TASK_REV="${{ needs.deploy.outputs.task_def_revision }}"
-          MSG_TEXT="${STATUS}: Job ${{ github.workflow }}\n*Author Name:* ${{ github.actor }}\n*Branch name:* ${{ github.ref_name }}\n*Build number:* ${{ github.run_number }}\n*Task Definition number:* ${TASK_REV}"
+
+          MSG_TEXT=$(printf "%s: Job %s\n*Author Name:* %s\n*Branch name:* %s\n*Build number:* %s\n*Task Definition number:* %s" \
+            "$STATUS" \
+            "${{ github.workflow }}" \
+            "${{ github.actor }}" \
+            "${{ github.ref_name }}" \
+            "${{ github.run_number }}" \
+            "$TASK_REV")
 
           PAYLOAD=$(jq -n \
             --arg color "$COLOR" \
