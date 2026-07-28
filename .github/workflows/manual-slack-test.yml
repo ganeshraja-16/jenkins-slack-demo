@@ -1,6 +1,8 @@
-name: Manual Build with Slack Notify
+name: Build and Deploy with Slack Notify
 
 on:
+  push:
+    branches: ['**']
   workflow_dispatch:
 
 jobs:
@@ -14,16 +16,30 @@ jobs:
           echo "Running build..."
           exit 0
 
-      - name: Notify Slack - Success
-        if: success()
-        run: |
-          curl -X POST -H "Content-type: application/json" \
-            --data "{\"text\":\"✅ Build SUCCESS: ${{ github.repository }} run #${{ github.run_number }} triggered by ${{ github.actor }}\"}" \
-            ${{ secrets.SLACK_WEBHOOK_URL }}
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Notify Slack - Failure
-        if: failure()
+      - name: Run a simple deploy step
         run: |
+          echo "Running deploy..."
+          exit 0
+
+  notify:
+    needs: [build, deploy]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify Slack - Final Status
+        run: |
+          if [ "${{ needs.build.result }}" == "success" ] && [ "${{ needs.deploy.result }}" == "success" ]; then
+            STATUS="SUCCESS"
+          else
+            STATUS="FAILURE"
+          fi
+
           curl -X POST -H "Content-type: application/json" \
-            --data "{\"text\":\"❌ Build FAILED: ${{ github.repository }} run #${{ github.run_number }} triggered by ${{ github.actor }}\"}" \
+            --data "{\"text\":\"${STATUS}: Job (${{ github.workflow }})\n*Author Name:* ${{ github.actor }}\n*Branch name:* ${{ github.ref_name }}\n*Build number:* ${{ github.run_number }}\n*More info at:* ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" \
             ${{ secrets.SLACK_WEBHOOK_URL }}
