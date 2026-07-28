@@ -69,6 +69,13 @@ jobs:
       IMAGE_DIGEST: ${{ needs.build-and-push.outputs.image_digest }}
       FAIL_ON_SEVERITIES: ${{ vars.FAIL_ON_SEVERITIES }}
 
+    outputs:
+      critical_count: ${{ steps.scan-findings.outputs.critical_count }}
+      high_count: ${{ steps.scan-findings.outputs.high_count }}
+      medium_count: ${{ steps.scan-findings.outputs.medium_count }}
+      low_count: ${{ steps.scan-findings.outputs.low_count }}
+      total_count: ${{ steps.scan-findings.outputs.total_count }}
+
     steps:
 
       - name: Configure AWS credentials
@@ -84,6 +91,7 @@ jobs:
           sudo apt-get install -y jq util-linux
 
       - name: Wait for ECR scan and check findings
+        id: scan-findings
         run: |
 
           MAX_WAIT=180
@@ -406,6 +414,28 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           echo ""
+          echo "Extracting severity counts for Slack notification..."
+          echo ""
+
+          CRITICAL_COUNT=$(echo "$FINDINGS_JSON" | jq '.imageScanFindings.findingSeverityCounts.CRITICAL // 0')
+          HIGH_COUNT=$(echo "$FINDINGS_JSON" | jq '.imageScanFindings.findingSeverityCounts.HIGH // 0')
+          MEDIUM_COUNT=$(echo "$FINDINGS_JSON" | jq '.imageScanFindings.findingSeverityCounts.MEDIUM // 0')
+          LOW_COUNT=$(echo "$FINDINGS_JSON" | jq '.imageScanFindings.findingSeverityCounts.LOW // 0')
+          TOTAL_COUNT=$((CRITICAL_COUNT + HIGH_COUNT + MEDIUM_COUNT + LOW_COUNT))
+
+          echo "Critical: $CRITICAL_COUNT"
+          echo "High: $HIGH_COUNT"
+          echo "Medium: $MEDIUM_COUNT"
+          echo "Low: $LOW_COUNT"
+          echo "Total: $TOTAL_COUNT"
+
+          echo "critical_count=$CRITICAL_COUNT" >> $GITHUB_OUTPUT
+          echo "high_count=$HIGH_COUNT" >> $GITHUB_OUTPUT
+          echo "medium_count=$MEDIUM_COUNT" >> $GITHUB_OUTPUT
+          echo "low_count=$LOW_COUNT" >> $GITHUB_OUTPUT
+          echo "total_count=$TOTAL_COUNT" >> $GITHUB_OUTPUT
+
+          echo ""
           echo "Checking configured severity threshold..."
           echo ""
 
@@ -570,19 +600,34 @@ jobs:
 
           fi
 
+          CRITICAL_COUNT="${{ needs.scan.outputs.critical_count }}"
+          HIGH_COUNT="${{ needs.scan.outputs.high_count }}"
+          MEDIUM_COUNT="${{ needs.scan.outputs.medium_count }}"
+          LOW_COUNT="${{ needs.scan.outputs.low_count }}"
+          TOTAL_COUNT="${{ needs.scan.outputs.total_count }}"
+
+          # Fall back to 0 if the scan job didn't produce outputs (e.g. it never ran)
+          CRITICAL_COUNT="${CRITICAL_COUNT:-0}"
+          HIGH_COUNT="${HIGH_COUNT:-0}"
+          MEDIUM_COUNT="${MEDIUM_COUNT:-0}"
+          LOW_COUNT="${LOW_COUNT:-0}"
+          TOTAL_COUNT="${TOTAL_COUNT:-0}"
+
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           TASK_REV="${{ needs.deploy.outputs.task_def_revision }}"
 
-          MSG_TEXT=$(printf "%s: Job %s\n*Author:* %s\n*Branch:* %s\n*Build Number:* %s\n*Task Definition:* %s\n*Build:* %s\n*Scan:* %s\n*Deploy:* %s" \
+          MSG_TEXT=$(printf "%s: Job %s\n*Author:* %s\n*Branch:* %s\n*Build Number:* %s\n*Task Definition:* %s\n*Total Found Vulnerabilities:* %s\n*Critical:* %s\n*High:* %s\n*Medium:* %s\n*Low:* %s" \
             "$STATUS" \
             "${{ github.workflow }}" \
             "${{ github.actor }}" \
             "${{ github.ref_name }}" \
             "${{ github.run_number }}" \
             "$TASK_REV" \
-            "$BUILD_RESULT" \
-            "$SCAN_RESULT" \
-            "$DEPLOY_RESULT")
+            "$TOTAL_COUNT" \
+            "$CRITICAL_COUNT" \
+            "$HIGH_COUNT" \
+            "$MEDIUM_COUNT" \
+            "$LOW_COUNT")
 
           FALLBACK_TEXT=$(printf "%s: %s Build #%s" \
             "$STATUS" \
@@ -612,6 +657,7 @@ jobs:
                       elements: [
                         {
                           type: "button",
+                          action_id: "view_workflow",
                           text: {
                             type: "plain_text",
                             text: "View Workflow"
