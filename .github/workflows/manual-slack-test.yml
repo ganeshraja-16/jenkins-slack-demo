@@ -1,8 +1,6 @@
 name: Build and Deploy with Slack Notify
 
 on:
-  push:
-    branches: ['**']
   workflow_dispatch:
 
 jobs:
@@ -41,5 +39,5 @@ jobs:
           fi
 
           curl -X POST -H "Content-type: application/json" \
-            --data "{\"text\":\"${STATUS}: Job (${{ github.workflow }})\n*Author Name:* ${{ github.actor }}\n*Branch name:* ${{ github.ref_name }}\n*Build number:* ${{ github.run_number }}\n*More info at:* ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" \
+            --data "{\"text\":\"${STATUS}: Job ${{ github.workflow }}\n*Author Name:* ${{ github.actor }}\n*Branch name:* ${{ github.ref_name }}\n*Build number:* ${{ github.run_number }}\n*More info at:* ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" \
             ${{ secrets.SLACK_WEBHOOK_URL }}
