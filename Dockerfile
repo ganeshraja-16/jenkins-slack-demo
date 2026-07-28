@@ -7,6 +7,6 @@ COPY . .
 RUN npm run build
 
 # Stage 2: Serve the built output with nginx
-FROM nginx:alpine
+FROM nginx:1.14
 COPY --from=build /app/dist /usr/share/nginx/html
 EXPOSE 80
