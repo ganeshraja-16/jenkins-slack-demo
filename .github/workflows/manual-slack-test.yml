@@ -9,6 +9,7 @@ jobs:
 
     outputs:
       image_tag: ${{ steps.image-tag.outputs.image_tag }}
+      image_digest: ${{ steps.image-digest.outputs.digest }}
 
     steps:
       - uses: actions/checkout@v4
@@ -33,7 +34,7 @@ jobs:
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
-          IMAGE_TAG: ${{ github.run_number }}
+          IMAGE_TAG: ${{ steps.image-tag.outputs.image_tag }}
         run: |
           docker build \
             -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
@@ -42,8 +43,22 @@ jobs:
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
+      - name: Capture image digest
+        id: image-digest
+        env:
+          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          IMAGE_TAG: ${{ steps.image-tag.outputs.image_tag }}
+        run: |
+          DIGEST=$(aws ecr describe-images \
+            --repository-name "$ECR_REPOSITORY" \
+            --region "$AWS_REGION" \
+            --image-ids imageTag="$IMAGE_TAG" \
+            --query 'imageDetails[0].imageDigest' --output text)
+          echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+
   scan:
-    name: scan
+    name: Scan Image
     needs: build-and-push
     runs-on: ubuntu-latest
 
@@ -51,6 +66,7 @@ jobs:
       AWS_REGION: ${{ secrets.AWS_REGION }}
       ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
       IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}
+      IMAGE_DIGEST: ${{ needs.build-and-push.outputs.image_digest }}
       FAIL_ON_SEVERITIES: ${{ secrets.FAIL_ON_SEVERITIES }}
 
     steps:
@@ -75,16 +91,18 @@ jobs:
           ELAPSED=0
           SCAN_STATUS=""
 
-          echo "Waiting for ECR scan on $ECR_REPOSITORY:$IMAGE_TAG ..."
+          echo "Waiting for ECR scan on $ECR_REPOSITORY@$IMAGE_DIGEST ..."
 
           while [ $ELAPSED -lt $MAX_WAIT ]; do
 
             SCAN_STATUS=$(aws ecr describe-image-scan-findings \
               --repository-name "$ECR_REPOSITORY" \
-              --image-id imageTag="$IMAGE_TAG" \
+              --image-id imageDigest="$IMAGE_DIGEST" \
               --region "$AWS_REGION" \
               --query 'imageScanStatus.status' \
-              --output text 2>/dev/null) || true
+              --output text 2>/dev/null | tr -d '[:space:]') || true
+
+            echo "Poll result: [$SCAN_STATUS]"
 
             if [ "$SCAN_STATUS" = "COMPLETE" ]; then
               echo "Scan complete."
@@ -95,7 +113,6 @@ jobs:
               exit 1
 
             else
-              echo "Scan status: ${SCAN_STATUS:-not started yet}..."
               sleep $INTERVAL
               ELAPSED=$((ELAPSED + INTERVAL))
             fi
@@ -106,9 +123,10 @@ jobs:
             echo "Timed out waiting for scan."
             exit 1
           fi
+
           FINDINGS_JSON=$(aws ecr describe-image-scan-findings \
             --repository-name "$ECR_REPOSITORY" \
-            --image-id imageTag="$IMAGE_TAG" \
+            --image-id imageDigest="$IMAGE_DIGEST" \
             --region "$AWS_REGION" \
             --output json) || true
 
@@ -455,7 +473,7 @@ jobs:
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
-          IMAGE_TAG: ${{ github.run_number }}
+          IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}
         run: |
           echo "uri=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
@@ -464,6 +482,7 @@ jobs:
           aws ecs describe-task-definition \
             --task-definition ${{ secrets.ECS_TASK_FAMILY }} \
             --query taskDefinition > task-definition.json
+
       - name: Update task definition with new image
         id: render-task-def
         uses: aws-actions/amazon-ecs-render-task-definition@v1
