@@ -1,4 +1,4 @@
-name: Build, Push to ECR, Deploy to ECS
+name: Static Website
 
 on:
   workflow_dispatch:
