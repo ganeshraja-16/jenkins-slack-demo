@@ -67,7 +67,7 @@ jobs:
       ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
       IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}
       IMAGE_DIGEST: ${{ needs.build-and-push.outputs.image_digest }}
-      FAIL_ON_SEVERITIES: ${{ secrets.FAIL_ON_SEVERITIES }}
+      FAIL_ON_SEVERITIES: ${{ vars.FAIL_ON_SEVERITIES }}
 
     steps:
 
