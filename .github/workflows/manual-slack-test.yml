@@ -6,8 +6,6 @@ on:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
-    outputs:
-      image_uri: ${{ steps.build-image.outputs.image_uri }}
     steps:
       - uses: actions/checkout@v4
 
@@ -23,7 +21,6 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build, tag, and push image
-        id: build-image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
@@ -32,7 +29,6 @@ jobs:
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          echo "image_uri=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
   deploy:
     needs: build-and-push
@@ -49,6 +45,19 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build image URI independently
+        id: image-uri
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ github.run_number }}
+        run: |
+          echo "uri=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
       - name: Download current task definition
         run: |
           aws ecs describe-task-definition \
@@ -61,7 +70,7 @@ jobs:
         with:
           task-definition: task-definition.json
           container-name: ${{ secrets.ECS_CONTAINER_NAME }}
-          image: ${{ needs.build-and-push.outputs.image_uri }}
+          image: ${{ steps.image-uri.outputs.uri }}
 
       - name: Register new task definition revision
         id: register-task-def
@@ -94,40 +103,39 @@ jobs:
         run: |
           if [ "${{ needs.build-and-push.result }}" == "success" ] && [ "${{ needs.deploy.result }}" == "success" ]; then
             STATUS="SUCCESS"
-            COLOR="good"
+            COLOR="#36a64f"
           else
             STATUS="FAILURE"
-            COLOR="danger"
+            COLOR="#d9534f"
           fi
 
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           TASK_REV="${{ needs.deploy.outputs.task_def_revision }}"
+          MSG_TEXT="${STATUS}: Job ${{ github.workflow }}
+*Author Name:* ${{ github.actor }}
+*Branch name:* ${{ github.ref_name }}
+*Build number:* ${{ github.run_number }}
+*Task Definition number:* ${TASK_REV}"
 
-          curl -X POST -H "Content-type: application/json" \
-            --data "{
-              \"attachments\": [
+          PAYLOAD=$(jq -n \
+            --arg color "$COLOR" \
+            --arg text "$MSG_TEXT" \
+            --arg url "$RUN_URL" \
+            '{
+              attachments: [
                 {
-                  \"color\": \"${COLOR}\",
-                  \"blocks\": [
-                    {
-                      \"type\": \"section\",
-                      \"text\": {
-                        \"type\": \"mrkdwn\",
-                        \"text\": \"${STATUS}: Job ${{ github.workflow }}\n*Author Name:* ${{ github.actor }}\n*Branch name:* ${{ github.ref_name }}\n*Build number:* ${{ github.run_number }}\n*Task Definition number:* ${TASK_REV}\"
-                      }
-                    },
-                    {
-                      \"type\": \"actions\",
-                      \"elements\": [
-                        {
-                          \"type\": \"button\",
-                          \"text\": { \"type\": \"plain_text\", \"text\": \"More info\" },
-                          \"url\": \"${RUN_URL}\"
-                        }
+                  color: $color,
+                  blocks: [
+                    { type: "section", text: { type: "mrkdwn", text: $text } },
+                    { type: "actions", elements: [
+                        { type: "button", text: { type: "plain_text", text: "More info" }, url: $url }
                       ]
                     }
                   ]
                 }
               ]
-            }" \
+            }')
+
+          curl -X POST -H "Content-type: application/json" \
+            --data "$PAYLOAD" \
             ${{ secrets.SLACK_WEBHOOK_URL }}
