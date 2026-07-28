@@ -1,0 +1,29 @@
+name: Manual Build with Slack Notify
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run a simple build step
+        run: |
+          echo "Running build..."
+          exit 0
+
+      - name: Notify Slack - Success
+        if: success()
+        run: |
+          curl -X POST -H "Content-type: application/json" \
+            --data "{\"text\":\"✅ Build SUCCESS: ${{ github.repository }} run #${{ github.run_number }} triggered by ${{ github.actor }}\"}" \
+            ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Notify Slack - Failure
+        if: failure()
+        run: |
+          curl -X POST -H "Content-type: application/json" \
+            --data "{\"text\":\"❌ Build FAILED: ${{ github.repository }} run #${{ github.run_number }} triggered by ${{ github.actor }}\"}" \
+            ${{ secrets.SLACK_WEBHOOK_URL }}
