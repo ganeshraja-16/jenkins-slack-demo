@@ -1,4 +1,4 @@
-name: Build, Push to ECR, Deploy to ECS
+name: Static Website Deployment
 
 on:
   workflow_dispatch:
@@ -111,11 +111,7 @@ jobs:
 
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           TASK_REV="${{ needs.deploy.outputs.task_def_revision }}"
-          MSG_TEXT="${STATUS}: Job ${{ github.workflow }}
-*Author Name:* ${{ github.actor }}
-*Branch name:* ${{ github.ref_name }}
-*Build number:* ${{ github.run_number }}
-*Task Definition number:* ${TASK_REV}"
+          MSG_TEXT="${STATUS}: Job ${{ github.workflow }}\n*Author Name:* ${{ github.actor }}\n*Branch name:* ${{ github.ref_name }}\n*Build number:* ${{ github.run_number }}\n*Task Definition number:* ${TASK_REV}"
 
           PAYLOAD=$(jq -n \
             --arg color "$COLOR" \
