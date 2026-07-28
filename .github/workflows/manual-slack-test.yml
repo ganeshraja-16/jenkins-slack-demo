@@ -12,7 +12,7 @@ jobs:
       - name: Run a simple build step
         run: |
           echo "Running build..."
-          exit 1
+          exit 0
 
       - name: Notify Slack - Success
         if: success()
