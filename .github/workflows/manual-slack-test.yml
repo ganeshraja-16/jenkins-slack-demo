@@ -109,7 +109,13 @@ jobs:
     steps:
       - name: Notify Slack - Final Status
         run: |
-          if [ "${{ needs.build-and-push.result }}" == "success" ] && [ "${{ needs.deploy.result }}" == "success" ]; then
+          BUILD_RESULT="${{ needs.build-and-push.result }}"
+          DEPLOY_RESULT="${{ needs.deploy.result }}"
+
+          if [ "$BUILD_RESULT" == "cancelled" ] || [ "$DEPLOY_RESULT" == "cancelled" ]; then
+            STATUS="ABORTED"
+            COLOR="#f0ad4e"
+          elif [ "$BUILD_RESULT" == "success" ] && [ "$DEPLOY_RESULT" == "success" ]; then
             STATUS="SUCCESS"
             COLOR="#36a64f"
           else
@@ -128,14 +134,18 @@ jobs:
             "${{ github.run_number }}" \
             "$TASK_REV")
 
+          FALLBACK_TEXT=$(printf "%s: Job %s - Build #%s" "$STATUS" "${{ github.workflow }}" "${{ github.run_number }}")
+
           PAYLOAD=$(jq -n \
             --arg color "$COLOR" \
             --arg text "$MSG_TEXT" \
+            --arg fallback "$FALLBACK_TEXT" \
             --arg url "$RUN_URL" \
             '{
               attachments: [
                 {
                   color: $color,
+                  fallback: $fallback,
                   blocks: [
                     { type: "section", text: { type: "mrkdwn", text: $text } },
                     { type: "actions", elements: [
