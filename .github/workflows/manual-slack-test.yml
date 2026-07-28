@@ -1,4 +1,4 @@
-name: Static Website
+name: Build, Push to ECR, Deploy to ECS
 
 on:
   workflow_dispatch:
@@ -130,48 +130,4 @@ jobs:
                 }
               ]
             }" \
-            ${{ secrets.SLACK_WEBHOOK_URL }}name: Build and Deploy with Slack Notify
-
-on:
-  workflow_dispatch:
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Run a simple build step
-        run: |
-          echo "Running build..."
-          exit 0
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Run a simple deploy step
-        run: |
-          echo "Running deploy..."
-          exit 0
-
-  notify:
-    needs: [build, deploy]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - name: Notify Slack - Final Status
-        run: |
-          if [ "${{ needs.build.result }}" == "success" ] && [ "${{ needs.deploy.result }}" == "success" ]; then
-            STATUS="SUCCESS"
-            COLOR="good"
-          else
-            STATUS="FAILURE"
-            COLOR="danger"
-          fi
-
-          curl -X POST -H "Content-type: application/json" \
-            --data "{\"attachments\":[{\"color\":\"${COLOR}\",\"text\":\"${STATUS}: Job ${{ github.workflow }}\n*Author Name:* ${{ github.actor }}\n*Branch Name:* ${{ github.ref_name }}\n*Build Number:* ${{ github.run_number }}\n*More info at:* ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}]}" \
             ${{ secrets.SLACK_WEBHOOK_URL }}
