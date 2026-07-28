@@ -34,10 +34,12 @@ jobs:
         run: |
           if [ "${{ needs.build.result }}" == "success" ] && [ "${{ needs.deploy.result }}" == "success" ]; then
             STATUS="SUCCESS"
+            COLOR="good"
           else
             STATUS="FAILURE"
+            COLOR="danger"
           fi
 
           curl -X POST -H "Content-type: application/json" \
-            --data "{\"text\":\"${STATUS}: Job ${{ github.workflow }}\n*Author Name:* ${{ github.actor }}\n*Branch name:* ${{ github.ref_name }}\n*Build number:* ${{ github.run_number }}\n*More info at:* ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" \
+            --data "{\"attachments\":[{\"color\":\"${COLOR}\",\"text\":\"${STATUS}: Job ${{ github.workflow }}\n*Author Name:* ${{ github.actor }}\n*Branch name:* ${{ github.ref_name }}\n*Build number:* ${{ github.run_number }}\n*More info at:* ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}]}" \
             ${{ secrets.SLACK_WEBHOOK_URL }}
