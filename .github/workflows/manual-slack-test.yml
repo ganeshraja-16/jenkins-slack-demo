@@ -6,25 +6,17 @@ on:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+
     outputs:
-      image_tag: ${{ steps.set-tag.outputs.tag }}
+      image_tag: ${{ steps.image-tag.outputs.image_tag }}
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Preview build output
+      - name: Set Image Tag
+        id: image-tag
         run: |
-          npm run build
-          echo "----- Build output (dist/) -----"
-          ls -la dist
-          echo "---------------------------------"
+          echo "image_tag=${{ github.run_number }}" >> $GITHUB_OUTPUT
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -37,28 +29,32 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Set image tag output
-        id: set-tag
-        run: echo "tag=${{ github.run_number }}" >> $GITHUB_OUTPUT
-
       - name: Build, tag, and push image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
-          IMAGE_TAG: ${{ steps.set-tag.outputs.tag }}
+          IMAGE_TAG: ${{ github.run_number }}
         run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+          docker build \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
   scan:
-    name: Scan
+    name: Scan Image
     needs: build-and-push
     runs-on: ubuntu-latest
-    outputs:
-      critical_count: ${{ steps.image-scan.outputs.critical_count }}
-      high_count: ${{ steps.image-scan.outputs.high_count }}
+
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+      IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}
+      FAIL_ON_SEVERITIES: ${{ secrets.FAIL_ON_SEVERITIES }}
+
     steps:
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -66,62 +62,77 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: Wait for ECR scan and check findings
-        id: image-scan
-        env:
-          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
-          AWS_REGION: ${{ secrets.AWS_REGION }}
-          IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}
-          FAIL_ON_SEVERITIES: "CRITICAL HIGH"
+      - name: Install utilities
         run: |
+          sudo apt-get update
+          sudo apt-get install -y jq util-linux
+
+      - name: Wait for ECR scan and check findings
+        run: |
+
           MAX_WAIT=180
           INTERVAL=5
           ELAPSED=0
           SCAN_STATUS=""
 
           echo "Waiting for ECR scan on $ECR_REPOSITORY:$IMAGE_TAG ..."
+
           while [ $ELAPSED -lt $MAX_WAIT ]; do
+
             SCAN_STATUS=$(aws ecr describe-image-scan-findings \
               --repository-name "$ECR_REPOSITORY" \
               --image-id imageTag="$IMAGE_TAG" \
               --region "$AWS_REGION" \
-              --query 'imageScanStatus.status' --output text 2>/dev/null) || true
+              --query 'imageScanStatus.status' \
+              --output text 2>/dev/null) || true
 
             if [ "$SCAN_STATUS" = "COMPLETE" ]; then
               echo "Scan complete."
               break
+
             elif [ "$SCAN_STATUS" = "FAILED" ]; then
-              echo "ECR scan failed to run. Blocking deploy."
+              echo "ECR scan failed."
               exit 1
+
             else
-              echo "Scan status: ${SCAN_STATUS:-not started yet}, waiting ${INTERVAL}s... (${ELAPSED}s/${MAX_WAIT}s)"
+              echo "Scan status: ${SCAN_STATUS:-not started yet}..."
               sleep $INTERVAL
               ELAPSED=$((ELAPSED + INTERVAL))
             fi
+
           done
 
           if [ "$SCAN_STATUS" != "COMPLETE" ]; then
-            echo "Timed out waiting for ECR scan to complete. Blocking deploy."
+            echo "Timed out waiting for scan."
             exit 1
           fi
-
           FINDINGS_JSON=$(aws ecr describe-image-scan-findings \
             --repository-name "$ECR_REPOSITORY" \
             --image-id imageTag="$IMAGE_TAG" \
-            --region "$AWS_REGION" --output json) || true
+            --region "$AWS_REGION" \
+            --output json) || true
 
           if [ -z "$FINDINGS_JSON" ]; then
-            echo "Could not retrieve scan findings. Blocking deploy."
+            echo "Could not retrieve scan findings."
             exit 1
           fi
+
+          echo ""
+          echo "=============================="
+          echo " Vulnerability Summary"
+          echo "=============================="
 
           echo "$FINDINGS_JSON" | jq '.imageScanFindings.findingSeverityCounts'
 
           IS_ENHANCED=$(echo "$FINDINGS_JSON" | jq '(.imageScanFindings.enhancedFindings // []) | length > 0')
 
           echo ""
-          echo "=== Vulnerability Details ==="
+          echo "=============================="
+          echo " Vulnerability Details"
+          echo "=============================="
+
           if [ "$IS_ENHANCED" = "true" ]; then
+
             echo "$FINDINGS_JSON" | jq -r '
               ["SEVERITY","CVE","PACKAGE","INSTALLED","FIXED_IN","CVSS","REFERENCE"],
               (.imageScanFindings.enhancedFindings[]? as $f |
@@ -131,14 +142,17 @@ jobs:
                   ($f.packageVulnerabilityDetails.vulnerabilityId // $f.title // "-"),
                   ($pkg.name // "-"),
                   ($pkg.version // "-"),
-                  ($pkg.fixedInVersion // "not yet available"),
+                  ($pkg.fixedInVersion // "Not Available"),
                   (($f.packageVulnerabilityDetails.cvss[0].baseScore // "-") | tostring),
                   ($f.packageVulnerabilityDetails.sourceUrl // (($f.packageVulnerabilityDetails.referenceUrls // [])[0]) // "-")
                 ]
               ) | @tsv
             ' | column -t -s$'\t'
+
           else
-            echo "(Basic scanning active — fix-version/CVSS need Enhanced Scanning. Full descriptions below.)"
+
+            echo "Basic Scanning Detected"
+
             echo "$FINDINGS_JSON" | jq -r '
               ["SEVERITY","CVE","PACKAGE","INSTALLED","DESCRIPTION"],
               (.imageScanFindings.findings[]? |
@@ -147,79 +161,282 @@ jobs:
                   .name,
                   (.attributes[]? | select(.key=="package_name") | .value) // "-",
                   (.attributes[]? | select(.key=="package_version") | .value) // "-",
-                  ((.description // "-") | if (length > 80) then .[0:80] + "..." else . end)
+                  ((.description // "-") |
+                    if length > 80
+                    then .[0:80] + "..."
+                    else .
+                    end)
                 ]
               ) | @tsv
             ' | column -t -s$'\t'
 
             echo ""
-            echo "=== Full Descriptions ==="
+            echo "=============================="
+            echo " Full Descriptions"
+            echo "=============================="
+
             echo "$FINDINGS_JSON" | jq -r '
               .imageScanFindings.findings[]? |
-              "\n--- " + .name + " (" + .severity + ") ---\n" +
-              "Package: " + ((.attributes[]? | select(.key=="package_name") | .value) // "-") +
-              "  Installed: " + ((.attributes[]? | select(.key=="package_version") | .value) // "-") + "\n" +
-              (.description // "n/a") + "\n" +
-              "Reference: " + .uri
+              "\n------------------------------------------\n" +
+              .name + " (" + .severity + ")\n\n" +
+              "Package : " +
+              ((.attributes[]? |
+              select(.key=="package_name") |
+              .value) // "-") +
+
+              "\nInstalled : " +
+
+              ((.attributes[]? |
+              select(.key=="package_version") |
+              .value) // "-") +
+
+              "\n\nDescription:\n" +
+              (.description // "n/a") +
+
+              "\n\nReference:\n" +
+              .uri
             '
+
           fi
 
           echo ""
+          echo "Generating GitHub Summary..."
+          echo ""
+
           {
-            echo "## ECR Scan Findings — ${ECR_REPOSITORY}:${IMAGE_TAG}"
+
+            echo "## ECR Scan Findings"
             echo ""
+            echo "**Repository:** ${ECR_REPOSITORY}"
+            echo ""
+            echo "**Image Tag:** ${IMAGE_TAG}"
+            echo ""
+
             if [ "$IS_ENHANCED" = "true" ]; then
+
               echo "| Severity | CVE | Package | Installed | Fixed In | CVSS | Reference |"
-              echo "|---|---|---|---|---|---|---|"
+              echo "|----------|-----|---------|------------|-----------|------|-----------|"
+
               echo "$FINDINGS_JSON" | jq -r '
+
                 .imageScanFindings.enhancedFindings[]? as $f |
+
                 (($f.packageVulnerabilityDetails.vulnerablePackages // [{}])[] ) as $pkg |
-                "| " + $f.severity + " | " + ($f.packageVulnerabilityDetails.vulnerabilityId // $f.title // "-") + " | " +
-                ($pkg.name // "-") + " | " + ($pkg.version // "-") + " | " +
-                ($pkg.fixedInVersion // "not yet available") + " | " +
-                (($f.packageVulnerabilityDetails.cvss[0].baseScore // "-") | tostring) + " | " +
-                "[link](" + ($f.packageVulnerabilityDetails.sourceUrl // (($f.packageVulnerabilityDetails.referenceUrls // [])[0]) // "#") + ") |"
+
+                "| " +
+
+                $f.severity +
+
+                " | " +
+
+                ($f.packageVulnerabilityDetails.vulnerabilityId // $f.title // "-") +
+
+                " | " +
+
+                ($pkg.name // "-") +
+
+                " | " +
+
+                ($pkg.version // "-") +
+
+                " | " +
+
+                ($pkg.fixedInVersion // "Not Available") +
+
+                " | " +
+
+                (($f.packageVulnerabilityDetails.cvss[0].baseScore // "-") | tostring) +
+
+                " | " +
+
+                "[Reference](" +
+
+                ($f.packageVulnerabilityDetails.sourceUrl //
+
+                (($f.packageVulnerabilityDetails.referenceUrls // [])[0]) //
+
+                "#") +
+
+                ") |"
+
               '
-            else
-              echo "| Severity | CVE | Package | Installed | Reference |"
-              echo "|---|---|---|---|---|"
+
+              echo ""
+              echo "### Full Details"
+              echo ""
               echo "$FINDINGS_JSON" | jq -r '
-                .imageScanFindings.findings[]? |
-                "| " + .severity + " | " + .name + " | " +
-                ((.attributes[]? | select(.key=="package_name") | .value) // "-") + " | " +
-                ((.attributes[]? | select(.key=="package_version") | .value) // "-") + " | " +
-                "[link](" + .uri + ") |"
+
+                .imageScanFindings.enhancedFindings[]? as $f |
+
+                "<details><summary><b>" +
+
+                ($f.packageVulnerabilityDetails.vulnerabilityId // $f.title // "-") +
+
+                "</b> (" +
+
+                $f.severity +
+
+                ")</summary>\n\n" +
+
+                "- **Description:** " +
+
+                ($f.description // "n/a") +
+
+                "\n" +
+
+                "- **CVSS:** " +
+
+                (($f.packageVulnerabilityDetails.cvss[0].baseScore // "-") | tostring) +
+
+                "\n" +
+
+                "- **Remediation:** " +
+
+                ($f.remediation.recommendation.text // "See AWS Reference") +
+
+                "\n" +
+
+                "- **Reference:** " +
+
+                ($f.packageVulnerabilityDetails.sourceUrl //
+
+                (($f.packageVulnerabilityDetails.referenceUrls // [])[0]) //
+
+                "-") +
+
+                "\n\n</details>\n"
+
               '
+
+            else
+
+              echo "| Severity | CVE | Package | Installed | Reference |"
+              echo "|----------|-----|---------|------------|-----------|"
+
+              echo "$FINDINGS_JSON" | jq -r '
+
+                .imageScanFindings.findings[]? |
+
+                "| " +
+
+                .severity +
+
+                " | " +
+
+                .name +
+
+                " | " +
+
+                ((.attributes[]? |
+
+                select(.key=="package_name") |
+
+                .value) // "-") +
+
+                " | " +
+
+                ((.attributes[]? |
+
+                select(.key=="package_version") |
+
+                .value) // "-") +
+
+                " | " +
+
+                "[Reference](" +
+
+                .uri +
+
+                ") |"
+
+              '
+
+              echo ""
+              echo "### Full Details"
+              echo ""
+
+              echo "$FINDINGS_JSON" | jq -r '
+
+                .imageScanFindings.findings[]? |
+
+                "<details><summary><b>" +
+
+                .name +
+
+                "</b> (" +
+
+                .severity +
+
+                ")</summary>\n\n" +
+
+                "- **Description:** " +
+
+                (.description // "n/a") +
+
+                "\n\n" +
+
+                "- **Reference:** " +
+
+                .uri +
+
+                "\n\n</details>\n"
+
+              '
+
             fi
+
           } >> "$GITHUB_STEP_SUMMARY"
 
-          CRITICAL_COUNT=$(echo "$FINDINGS_JSON" | jq '.imageScanFindings.findingSeverityCounts.CRITICAL // 0')
-          HIGH_COUNT=$(echo "$FINDINGS_JSON" | jq '.imageScanFindings.findingSeverityCounts.HIGH // 0')
-          echo "critical_count=$CRITICAL_COUNT" >> $GITHUB_OUTPUT
-          echo "high_count=$HIGH_COUNT" >> $GITHUB_OUTPUT
+          echo ""
+          echo "Checking configured severity threshold..."
+          echo ""
 
           BLOCK=0
-          for SEV in $FAIL_ON_SEVERITIES; do
-            COUNT=$(echo "$FINDINGS_JSON" | jq --arg SEV "$SEV" '.imageScanFindings.findingSeverityCounts[$SEV] // 0')
-            echo "${SEV}: ${COUNT}"
+
+          for SEV in $FAIL_ON_SEVERITIES
+          do
+
+            COUNT=$(echo "$FINDINGS_JSON" | jq --arg SEV "$SEV" \
+              '.imageScanFindings.findingSeverityCounts[$SEV] // 0')
+
+            echo "$SEV : $COUNT"
+
             if [ "$COUNT" -gt 0 ]; then
               BLOCK=1
             fi
+
           done
 
+          echo ""
+
           if [ "$BLOCK" -eq 1 ]; then
-            echo "Vulnerabilities found at or above threshold (${FAIL_ON_SEVERITIES}). Blocking deploy."
+
+            echo "Vulnerabilities found at configured threshold."
+
+            echo "Deployment will be blocked."
+
             exit 1
+
           else
-            echo "No vulnerabilities found at ${FAIL_ON_SEVERITIES} severity. Safe to deploy."
+
+            echo "No blocking vulnerabilities detected."
+
+            echo "Deployment may continue."
+
           fi
 
   deploy:
-    needs: scan
+    needs:
+      - build-and-push
+      - scan
+
     runs-on: ubuntu-latest
+
     outputs:
       task_def_revision: ${{ steps.register-task-def.outputs.revision }}
+
     steps:
+
       - uses: actions/checkout@v4
 
       - name: Configure AWS credentials
@@ -238,7 +455,7 @@ jobs:
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
-          IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}
+          IMAGE_TAG: ${{ github.run_number }}
         run: |
           echo "uri=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
@@ -247,7 +464,6 @@ jobs:
           aws ecs describe-task-definition \
             --task-definition ${{ secrets.ECS_TASK_FAMILY }} \
             --query taskDefinition > task-definition.json
-
       - name: Update task definition with new image
         id: render-task-def
         uses: aws-actions/amazon-ecs-render-task-definition@v1
@@ -259,12 +475,25 @@ jobs:
       - name: Register new task definition revision
         id: register-task-def
         run: |
-          jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' \
-            "${{ steps.render-task-def.outputs.task-definition }}" > cleaned-task-def.json
+          jq 'del(
+            .taskDefinitionArn,
+            .revision,
+            .status,
+            .requiresAttributes,
+            .compatibilities,
+            .registeredAt,
+            .registeredBy
+          )' \
+          "${{ steps.render-task-def.outputs.task-definition }}" > cleaned-task-def.json
+
+          echo "----- Cleaned Task Definition -----"
+          cat cleaned-task-def.json
+          echo "-----------------------------------"
 
           REVISION=$(aws ecs register-task-definition \
             --cli-input-json file://cleaned-task-def.json \
-            --query 'taskDefinition.revision' --output text)
+            --query 'taskDefinition.revision' \
+            --output text)
 
           echo "revision=$REVISION" >> $GITHUB_OUTPUT
 
@@ -283,60 +512,93 @@ jobs:
             --services ${{ secrets.ECS_SERVICE }}
 
   notify:
-    needs: [build-and-push, scan, deploy]
     if: always()
+
+    needs:
+      - build-and-push
+      - scan
+      - deploy
+
     runs-on: ubuntu-latest
+
     steps:
+
       - name: Notify Slack - Final Status
         run: |
+
           BUILD_RESULT="${{ needs.build-and-push.result }}"
           SCAN_RESULT="${{ needs.scan.result }}"
           DEPLOY_RESULT="${{ needs.deploy.result }}"
 
-          if [ "$BUILD_RESULT" == "cancelled" ] || [ "$SCAN_RESULT" == "cancelled" ] || [ "$DEPLOY_RESULT" == "cancelled" ]; then
+          if [ "$BUILD_RESULT" == "cancelled" ] || \
+             [ "$SCAN_RESULT" == "cancelled" ] || \
+             [ "$DEPLOY_RESULT" == "cancelled" ]; then
+
             STATUS="ABORTED"
             COLOR="#f0ad4e"
-          elif [ "$BUILD_RESULT" == "success" ] && [ "$SCAN_RESULT" == "success" ] && [ "$DEPLOY_RESULT" == "success" ]; then
+
+          elif [ "$BUILD_RESULT" == "success" ] && \
+               [ "$SCAN_RESULT" == "success" ] && \
+               [ "$DEPLOY_RESULT" == "success" ]; then
+
             STATUS="SUCCESS"
             COLOR="#36a64f"
+
           else
+
             STATUS="FAILURE"
             COLOR="#d9534f"
+
           fi
 
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           TASK_REV="${{ needs.deploy.outputs.task_def_revision }}"
-          CRITICAL="${{ needs.scan.outputs.critical_count }}"
-          HIGH="${{ needs.scan.outputs.high_count }}"
 
-          MSG_TEXT=$(printf "%s: Job %s\n*Author Name:* %s\n*Branch name:* %s\n*Build number:* %s\n*Task Definition number:* %s\n*Critical vulnerabilities:* %s\n*High vulnerabilities:* %s" \
+          MSG_TEXT=$(printf "%s: Job %s\n*Author:* %s\n*Branch:* %s\n*Build Number:* %s\n*Task Definition:* %s\n*Build:* %s\n*Scan:* %s\n*Deploy:* %s" \
             "$STATUS" \
             "${{ github.workflow }}" \
             "${{ github.actor }}" \
             "${{ github.ref_name }}" \
             "${{ github.run_number }}" \
             "$TASK_REV" \
-            "${CRITICAL:-N/A}" \
-            "${HIGH:-N/A}")
+            "$BUILD_RESULT" \
+            "$SCAN_RESULT" \
+            "$DEPLOY_RESULT")
 
-          FALLBACK_TEXT=$(printf "%s: Job %s - Build #%s" "$STATUS" "${{ github.workflow }}" "${{ github.run_number }}")
+          FALLBACK_TEXT=$(printf "%s: %s Build #%s" \
+            "$STATUS" \
+            "${{ github.workflow }}" \
+            "${{ github.run_number }}")
 
           PAYLOAD=$(jq -n \
-            --arg channel "#github-builds" \
             --arg color "$COLOR" \
             --arg text "$MSG_TEXT" \
             --arg fallback "$FALLBACK_TEXT" \
             --arg url "$RUN_URL" \
             '{
-              channel: $channel,
               attachments: [
                 {
                   color: $color,
                   fallback: $fallback,
                   blocks: [
-                    { type: "section", text: { type: "mrkdwn", text: $text } },
-                    { type: "actions", elements: [
-                        { type: "button", text: { type: "plain_text", text: "More info" }, url: $url }
+                    {
+                      type: "section",
+                      text: {
+                        type: "mrkdwn",
+                        text: $text
+                      }
+                    },
+                    {
+                      type: "actions",
+                      elements: [
+                        {
+                          type: "button",
+                          text: {
+                            type: "plain_text",
+                            text: "View Workflow"
+                          },
+                          url: $url
+                        }
                       ]
                     }
                   ]
@@ -344,7 +606,7 @@ jobs:
               ]
             }')
 
-          curl -X POST https://slack.com/api/chat.postMessage \
-            -H "Authorization: Bearer ${{ secrets.SLACK_BOT_TOKEN }}" \
+          curl -X POST \
             -H "Content-type: application/json" \
-            --data "$PAYLOAD"
+            --data "$PAYLOAD" \
+            ${{ secrets.SLACK_WEBHOOK_URL }}
