@@ -43,7 +43,7 @@ jobs:
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
   scan:
-    name: Scan Image
+    name: scan
     needs: build-and-push
     runs-on: ubuntu-latest
 
